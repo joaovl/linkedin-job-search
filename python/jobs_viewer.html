@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LinkedIn Jobs Viewer</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;margin:0;padding:20px;background:#f5f7fb}
+    .header{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+    input.search{flex:1;min-width:250px;padding:8px 12px;font-size:16px;border:1px solid #ccd;background:#fff;border-radius:6px}
+    .count{color:#666;white-space:nowrap}
+    .jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:12px}
+    .job{background:#fff;padding:14px;border-radius:8px;box-shadow:0 1px 3px rgba(16,24,40,0.06);border:1px solid #e6eef6}
+    .job h3{margin:0 0 6px;font-size:18px}
+    .meta{font-size:13px;color:#444;margin-bottom:8px}
+    .desc{font-size:14px;color:#222;margin-top:8px}
+    a.link{color:#0a66c2;text-decoration:none}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    .empty{color:#666;padding:24px;text-align:center}
+    pre.notice{background:#fff3cd;border:1px solid #ffeeba;padding:12px;border-radius:6px}
+    button{padding:8px 12px;border-radius:6px;border:1px solid #ccd;background:#fff;cursor:pointer}
+    button:hover{background:#f8f9fa}
+    #save{background:#0a66c2;color:#fff;border-color:#0a66c2;font-weight:500}
+    #save:hover{background:#004182}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <input id="titleSearch" class="search" placeholder="Search by job title only..." style="flex:0.6;min-width:200px" />
+    <input id="q" class="search" placeholder="Search everything (company, location, description)..." style="flex:1;min-width:250px" />
+    <button id="helpToggle" title="Show LinkedIn URL breakdown">URL help</button>
+    <select id="recent" title="Filter by most recent" style="padding:8px;border-radius:6px;border:1px solid #ccd;background:#fff">
+      <option value="0" selected>All time</option>
+      <option value="3600">Past hour</option>
+      <option value="86400">Past 24 hours</option>
+      <option value="604800">Past 7 days</option>
+    </select>
+    <div class="controls">
+      <button id="clear">Clear All</button>
+      <button id="selectAll">Select All</button>
+      <button id="deselectAll">Deselect All</button>
+      <button id="deleteSelected">Delete Selected</button>
+      <button id="save">💾 Save to File</button>
+    </div>
+    <div class="count" id="count">Loading...</div>
+  </div>
+
+  <div id="urlHelp" style="display:none;margin-bottom:12px;background:#fff;padding:12px;border-radius:8px;border:1px solid #e6eef6">
+    <strong>LinkedIn search URL breakdown</strong>
+    <p style="margin:6px 0">Common query parameters you may see in LinkedIn job search URLs and what they mean:</p>
+    <ul>
+      <li><code>currentJobId=4184090151</code> — Specifies a job currently being viewed. Changing/removing it does not affect the search results.</li>
+      <li><code>distance=25</code> — Search radius in miles. Change to <code>distance=50</code> to search within 50 miles.</li>
+      <li><code>f_TPR=r3600</code> — Recency filter. <code>r3600</code> = last hour. Common values: <code>r86400</code> (24h), <code>r604800</code> (7 days), <code>r2592000</code> (30 days).</li>
+      <li><code>geoId=103644278</code> — Geographic identifier for the region (used internally by LinkedIn). Replace with the geoId for your desired area.</li>
+      <li><code>keywords=senior%20operations%20manager</code> — Search keywords (URL-encoded).</li>
+      <li><code>location=United%20States</code> — Human-readable location string in the URL.</li>
+      <li><code>origin=JOB_SEARCH_PAGE_JOB_FILTER</code> — Indicates the UI origin; safe to ignore for scraping.</li>
+      <li><code>sortBy=R</code> — Sort mode: <code>R</code> = relevance, <code>DD</code> = date posted.</li>
+    </ul>
+    <p style="margin:6px 0">Tip: the scraper accepts a <code>--time-range</code> flag which maps to <code>f_TPR=r{seconds}</code> (for example <code>--time-range 24h</code> → <code>f_TPR=r86400</code>).</p>
+  </div>
+
+  <div id="prefixPanel" style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px"></div>
+  <div id="jobs" class="jobs"></div>
+  <div id="empty" class="empty" style="display:none">No jobs found.</div>
+
+  <script>
+    async function loadJobs(){
+      try{
+        // Get list of all JSON files from server
+        const listRes = await fetch('/list_json_files');
+        if(!listRes.ok) throw new Error('Failed to get file list: ' + listRes.status);
+        const files = await listRes.json();
+        
+        if(!files || files.length === 0){
+          throw new Error('No JSON files found in folder');
+        }
+        
+        console.log(`Found ${files.length} JSON file(s):`, files);
+        
+        // Load all JSON files and merge them
+        let allJobs = [];
+        const loadedFiles = [];
+        
+        for(const filename of files){
+          try{
+            const res = await fetch(filename);
+            if(!res.ok){
+              console.warn(`Skipping ${filename}: HTTP ${res.status}`);
+              continue;
+            }
+            const data = await res.json();
+            if(Array.isArray(data)){
+              allJobs = allJobs.concat(data);
+              loadedFiles.push(filename);
+            } else {
+              console.warn(`Skipping ${filename}: not an array`);
+            }
+          }catch(e){
+            console.warn(`Failed to load ${filename}:`, e);
+          }
+        }
+        
+        // Remove duplicates based on job_link
+        const uniqueJobs = [];
+        const seenLinks = new Set();
+        for(const job of allJobs){
+          if(job.job_link && !seenLinks.has(job.job_link)){
+            seenLinks.add(job.job_link);
+            uniqueJobs.push(job);
+          }
+        }
+        
+        // Precompute decoded description and lowercase search string
+        uniqueJobs.forEach(j=>{
+          j._decoded_description = decodeEntities(j.description || '');
+          j._searchText = [j.title, j.company, j.location, j.posted_date, j._decoded_description].filter(Boolean).join(' ').toLowerCase();
+        });
+        
+        console.log(`Loaded ${uniqueJobs.length} unique jobs from ${loadedFiles.length} file(s)`);
+        return uniqueJobs;
+      }catch(e){
+        document.getElementById('jobs').innerHTML = '<pre class="notice">Error loading job files:\n'+e.message+'</pre>';
+        document.getElementById('count').textContent = '';
+        return [];
+      }
+    }
+
+    function decodeEntities(encodedStr){
+      const txt = document.createElement('textarea');
+      txt.innerHTML = encodedStr || '';
+      return txt.value;
+    }
+
+    function renderJob(job, idx){
+      const el = document.createElement('div');
+      el.className = 'job';
+      const title = job.title || '';
+      const company = job.company || '';
+      const location = job.location || '';
+      const posted = job.posted_date || '';
+      const link = job.job_link || '';
+      let descHtml = '';
+      if(job.description){
+        const decoded = job._decoded_description || decodeEntities(job.description);
+        descHtml = decoded;
+      }
+
+      const badge = job.search_keywords ? `<small style="display:inline-block;margin-left:8px;padding:2px 6px;border-radius:6px;background:#eef6ff;color:#0a66c2;border:1px solid #dbeffd;font-size:12px">${escapeHtml(job.search_keywords)}</small>` : '';
+      el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px"><input type="checkbox" class="job-chk" data-idx="${idx}" />
+        <h3 style="margin:0"><a class="link" href="${link}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>${badge}</h3></div>
+        <div class="meta">${escapeHtml(company)} • ${escapeHtml(location)} <span style="float:right">${escapeHtml(posted)}</span></div>
+        <div class="desc">${descHtml}</div>
+      `;
+      return el;
+    }
+
+    function escapeHtml(s){
+      if(!s) return '';
+      return s.replace(/[&<>\"]/g, function(c){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+      });
+    }
+
+    (async function(){
+      let jobs = await loadJobs();
+      const container = document.getElementById('jobs');
+      const countEl = document.getElementById('count');
+      const qInput = document.getElementById('q');
+      const empty = document.getElementById('empty');
+      const prefixPanel = document.getElementById('prefixPanel');
+
+      function titlePrefix(title){
+        if(!title) return '';
+        const cleaned = title.replace(/[\u2018\u2019\u201C\u201D]/g,'').trim();
+        const tokens = cleaned.split(/\s+/).map(t=>t.replace(/^[^\w\d]+|[^\w\d]+$/g, '')).filter(Boolean);
+        const first = tokens.slice(0,3);
+        return first.join(' ');
+      }
+
+      function renderPrefixes(jobsList){
+        const counts = {};
+        for(const j of jobsList){
+          const p = titlePrefix(j.title || '');
+          if(!p) continue;
+          counts[p] = (counts[p]||0) + 1;
+        }
+        const arr = Object.keys(counts).map(k=>({prefix:k,count:counts[k]})).sort((a,b)=> b.count - a.count || a.prefix.localeCompare(b.prefix));
+        prefixPanel.innerHTML = '';
+        const allBtn = document.createElement('button');
+        allBtn.textContent = 'All ('+jobsList.length+')';
+        allBtn.addEventListener('click', ()=>{ 
+          titleSearchInput.value=''; 
+          qInput.value=''; 
+          applyFilters(); 
+        });
+        prefixPanel.appendChild(allBtn);
+        for(let i=0;i<Math.min(arr.length,30);i++){
+          const it = arr[i];
+          const btn = document.createElement('button');
+          btn.textContent = `${it.prefix} (${it.count})`;
+          btn.addEventListener('click', ()=>{
+            titleSearchInput.value = it.prefix;
+            qInput.value = '';
+            applyFilters();
+          });
+          prefixPanel.appendChild(btn);
+        }
+      }
+
+      function update(filtered){
+        container.innerHTML = '';
+        if(filtered.length === 0){
+          empty.style.display = 'block';
+        } else {
+          empty.style.display = 'none';
+          for(let i=0;i<filtered.length;i++){
+            container.appendChild(renderJob(filtered[i], i));
+          }
+        }
+        // Show filtered count and total count
+        if(filtered.length === jobs.length){
+          countEl.textContent = `${jobs.length} jobs`;
+        } else {
+          countEl.textContent = `${filtered.length} of ${jobs.length} jobs`;
+        }
+      }
+
+      function matchesTitle(job, q){
+        if(!q) return true;
+        q = q.toLowerCase();
+        const title = (job.title || '').toLowerCase();
+        return title.indexOf(q) !== -1;
+      }
+
+      function matchesAnything(job, q){
+        if(!q) return true;
+        q = q.toLowerCase();
+        const fields = job._searchText || [job.title, job.company, job.location, job.posted_date, job.description].filter(Boolean).join(' ').toLowerCase();
+        return fields.indexOf(q) !== -1;
+      }
+
+      function postedDateToSecondsAgo(text){
+        if(!text) return Infinity;
+        const t = text.toLowerCase();
+        if(t.indexOf('just') !== -1 || t.indexOf('today') !== -1 || t.indexOf('posted') !== -1 && t.indexOf('hour')===-1 && t.indexOf('day')===-1) return 0;
+        let m = t.match(/(\d+)\+?\s*day/);
+        if(m) return parseInt(m[1],10) * 86400;
+        m = t.match(/(\d+)\s*hour/);
+        if(m) return parseInt(m[1],10) * 3600;
+        m = t.match(/(\d+)\s*minute/);
+        if(m) return parseInt(m[1],10) * 60;
+        m = t.match(/(\d+)\s*week/);
+        if(m) return parseInt(m[1],10) * 7 * 86400;
+        m = t.match(/(\d+)\s*month/);
+        if(m) return parseInt(m[1],10) * 30 * 86400;
+        const iso = Date.parse(text);
+        if(!isNaN(iso)){
+          const secs = Math.floor((Date.now() - iso)/1000);
+          return secs;
+        }
+        return Infinity;
+      }
+
+      function filterByRecent(list, secondsLimit){
+        if(!secondsLimit || secondsLimit <= 0) return list;
+        return list.filter(j=>{
+          const s = postedDateToSecondsAgo(j.posted_date || '');
+          if(!isFinite(s)) return false;
+          return s <= secondsLimit;
+        });
+      }
+
+      let currentFiltered = jobs.slice();
+      renderPrefixes(jobs);
+      update(jobs);
+
+      const titleSearchInput = document.getElementById('titleSearch');
+      
+      titleSearchInput.addEventListener('input', ()=>{ applyFilters(); });
+      qInput.addEventListener('input', ()=>{ applyFilters(); });
+      document.getElementById('recent').addEventListener('change', ()=>{ applyFilters(); });
+      document.getElementById('clear').addEventListener('click', ()=>{ 
+        titleSearchInput.value=''; 
+        qInput.value=''; 
+        document.getElementById('recent').value='0'; 
+        applyFilters(); 
+        titleSearchInput.focus(); 
+      });
+
+      function applyFilters(){
+        const titleQuery = titleSearchInput.value.trim();
+        const generalQuery = qInput.value.trim();
+        const recentSec = parseInt(document.getElementById('recent').value,10) || 0;
+        
+        let filtered = jobs.filter(j => {
+          // Must match title search if provided
+          if(!matchesTitle(j, titleQuery)) return false;
+          // Must match general search if provided
+          if(!matchesAnything(j, generalQuery)) return false;
+          return true;
+        });
+        
+        if(recentSec>0){
+          filtered = filterByRecent(filtered, recentSec);
+        }
+        currentFiltered = filtered;
+        
+        // Update prefix chips with current job counts
+        renderPrefixes(jobs);
+        update(filtered);
+      }
+
+      document.getElementById('selectAll').addEventListener('click', ()=>{
+        document.querySelectorAll('.job-chk').forEach(ch => ch.checked = true);
+      });
+      document.getElementById('deselectAll').addEventListener('click', ()=>{
+        document.querySelectorAll('.job-chk').forEach(ch => ch.checked = false);
+      });
+      document.getElementById('deleteSelected').addEventListener('click', ()=>{
+        const toDelete = Array.from(document.querySelectorAll('.job-chk')).filter(c=>c.checked).map(c=>parseInt(c.dataset.idx,10));
+        if(toDelete.length===0){ alert('No jobs selected'); return; }
+        currentFiltered = currentFiltered.filter((_,i)=> !toDelete.includes(i));
+        update(currentFiltered);
+      });
+
+      document.getElementById('save').addEventListener('click', async ()=>{
+        try{
+          // Save the entire jobs array (after any deletions)
+          const payload = jobs.map(j=>{
+            const copy = Object.assign({}, j);
+            delete copy._decoded_description;
+            delete copy._searchText;
+            return copy;
+          });
+
+          const res = await fetch('/save_jobs', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          const jj = await res.json();
+          if(res.ok && jj.ok){
+            alert(`Saved ${payload.length} jobs to linkedin_jobs.json.\nA backup was created with timestamp.`);
+          } else {
+            alert('Save failed: '+JSON.stringify(jj));
+          }
+        }catch(e){
+          alert('Save failed: '+e.message);
+        }
+      });
+
+      document.getElementById('helpToggle').addEventListener('click', ()=>{
+        const el = document.getElementById('urlHelp');
+        el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+      });
+    })();
+  </script>
+</body>
+</html>

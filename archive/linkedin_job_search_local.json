@@ -1,0 +1,389 @@
+{
+  "name": "LinkedIn Job Search - Local JSON (Ollama)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-400, 0],
+      "id": "schedule-trigger",
+      "name": "Daily 9AM"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-400, 200],
+      "id": "manual-trigger",
+      "name": "Manual Run"
+    },
+    {
+      "parameters": {
+        "command": "cat /data/n8n_linkedin/config.json",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [-160, 100],
+      "id": "read-config-file",
+      "name": "Read Config File"
+    },
+    {
+      "parameters": {
+        "jsCode": "const configText = $input.item.json.stdout || '{}';\nconst config = JSON.parse(configText);\n\n// Generate timestamp for output files\nconst now = new Date();\nconst timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);\n\nreturn [{\n  json: {\n    jobTitles: config.job_titles || ['Engineering Manager'],\n    location: config.location || 'London, UK',\n    timeRange: config.time_range || '48h',\n    excludeKeywords: config.exclude_keywords || [],\n    mustHaveKeywords: config.must_have || [],\n    minScore: config.min_score || 6,\n    maxJobs: config.max_jobs_per_title || 20,\n    ollamaModel: config.ollama_model || 'Qwen2.5:latest',\n    ollamaUrl: config.ollama_url || 'http://host.docker.internal:11434',\n    // Metadata for output files\n    runTimestamp: timestamp,\n    outputFileMatches: `/data/n8n_linkedin/output/matches_${timestamp}.json`,\n    outputFileRejected: `/data/n8n_linkedin/output/rejected_${timestamp}.json`,\n    metadata: {\n      source: 'LinkedIn (via Python scraper)',\n      aiProvider: 'Ollama (local)',\n      aiModel: config.ollama_model || 'Qwen2.5:latest',\n      candidateName: 'Joao Lourenco',\n      runDate: now.toISOString(),\n      configVersion: '1.0'\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [60, 100],
+      "id": "parse-config",
+      "name": "Parse Config"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create output directory and pass through config\nconst config = $input.item.json;\n\n// Note: mkdir will be done via shell in the scraper step\n// This node just passes through the config\nreturn [{ json: config }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [280, 100],
+      "id": "create-output-dir",
+      "name": "Pass Config"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "jobTitles",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [500, 100],
+      "id": "split-job-titles",
+      "name": "Split Job Titles"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [720, 100],
+      "id": "loop-job-titles",
+      "name": "Loop Job Titles"
+    },
+    {
+      "parameters": {
+        "command": "=mkdir -p /data/n8n_linkedin/output && cd /data/n8n_linkedin/python && python3 jobs_scraper.py -k \"{{ $json.jobTitles }}\" -l \"{{ $('Parse Config').item.json.location }}\" -n {{ $('Parse Config').item.json.maxJobs }} -t {{ $('Parse Config').item.json.timeRange }} 2>&1",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [940, 100],
+      "id": "run-scraper",
+      "name": "Run Python Scraper"
+    },
+    {
+      "parameters": {
+        "command": "=cat \"/data/n8n_linkedin/python/{{ $('Loop Job Titles').item.json.jobTitles.replace(/[^\\w\\s-]/g, '').replace(/[\\s-]+/g, '_') }}__{{ $('Parse Config').item.json.location.replace(/[^\\w\\s-]/g, '').replace(/[\\s-]+/g, '_') }}_r{{ $('Parse Config').item.json.timeRange === '48h' ? '172800' : ($('Parse Config').item.json.timeRange === '24h' ? '86400' : '604800') }}.json\" 2>/dev/null || echo '[]'",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1160, 100],
+      "id": "read-scraper-output",
+      "name": "Read Scraper Output"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse JSON and split into individual job items\nconst jobsText = $input.item.json.stdout || '[]';\nlet jobs = [];\n\ntry {\n  jobs = JSON.parse(jobsText);\n} catch(e) {\n  console.log('Parse error:', e.message);\n  return [];\n}\n\nif (!Array.isArray(jobs) || jobs.length === 0) {\n  return [];\n}\n\nconst config = $('Parse Config').item.json;\nconst searchTitle = $('Loop Job Titles').item.json.jobTitles;\n\nconsole.log('Found ' + jobs.length + ' jobs for: ' + searchTitle);\n\n// Return each job as separate item with all data embedded\nreturn jobs.map((job, idx) => ({\n  json: {\n    _idx: idx,\n    title: job.title || '',\n    company: job.company || '',\n    location: job.location || '',\n    job_link: job.job_link || '',\n    posted_date: job.posted_date || '',\n    description: job.description || '',\n    searchTitle: searchTitle,\n    config: config\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 100],
+      "id": "parse-jobs",
+      "name": "Split Into Jobs"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": true
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1600, 100],
+      "id": "batch-jobs",
+      "name": "Loop Jobs"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.config?.ollamaUrl || $('Parse Config').item.json.ollamaUrl }}/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $json.config?.ollamaModel || $('Parse Config').item.json.ollamaModel }}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a job analyzer. Return ONLY valid JSON, no markdown.\\n\\nCANDIDATE: Joao Lourenco - Engineering Manager, 14+ yrs software quality, 8+ yrs leading teams, manager of managers (16 people, 2 EMs), scaled teams 4-16, safety-critical (auto/aero/defence), skills: test automation, CI/CD, Python, ISO 9001/27001, budget 175k GBP, London UK.\\n\\nREJECT if: electrical/hardware/embedded, mechanical/civil eng, hands-on IC coding, junior/mid-level, C-suite/20+ yrs, non-software.\\n\\nSCORE 1-10: 10=perfect EM safety-critical, 8-9=strong EM software, 6-7=good mgmt, 4-5=partial, 1-3=poor.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze: {{ $json.title }} at {{ $json.company }} ({{ $json.location }}).\\n\\nDesc: {{ $json.description ? $json.description.substring(0, 1500).replace(/[\\\"\\\\]/g, ' ') : 'None' }}\\n\\nReturn JSON: {\\\"relevant\\\": bool, \\\"rejection_reason\\\": str/null, \\\"score\\\": 0-10, \\\"company_size\\\": str, \\\"company_industry\\\": str, \\\"company_about\\\": str, \\\"role_summary\\\": str, \\\"match_reasons\\\": [], \\\"concerns\\\": [], \\\"seniority_level\\\": str}\"\n    }\n  ],\n  \"stream\": false,\n  \"options\": { \"temperature\": 0.2 }\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1820, 100],
+      "id": "ollama-analyze-job",
+      "name": "Ollama: Analyze Job"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get Ollama response from HTTP request\nconst ollamaResponse = $input.item.json;\n\n// Get job data from the Loop Jobs node\nconst jobData = $('Loop Jobs').item.json;\nconst config = jobData.config || $('Parse Config').item.json;\n\nconsole.log('Processing: ' + jobData.title + ' at ' + jobData.company);\n\nlet ollamaContent = ollamaResponse.message?.content || '{}';\n\ntry {\n  // Extract JSON from possible markdown blocks\n  const jsonMatch = ollamaContent.match(/```json\\s*([\\s\\S]*?)```/) || \n                    ollamaContent.match(/```\\s*([\\s\\S]*?)```/) ||\n                    ollamaContent.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) ollamaContent = jsonMatch[1] || jsonMatch[0];\n  \n  const analysis = JSON.parse(ollamaContent.trim());\n  \n  // Ensure relevant is strictly boolean\n  const isRelevant = analysis.relevant === true || analysis.relevant === 'true';\n  const score = parseInt(analysis.score) || 0;\n  \n  console.log('Parsed - Score: ' + score + ', Relevant: ' + isRelevant);\n  \n  return [{\n    json: {\n      title: jobData.title,\n      company: jobData.company,\n      location: jobData.location,\n      job_link: jobData.job_link,\n      posted_date: jobData.posted_date,\n      description: jobData.description,\n      searchTitle: jobData.searchTitle,\n      config: config,\n      analysis: {\n        relevant: isRelevant,\n        rejection_reason: analysis.rejection_reason || null,\n        score: score,\n        company_size: analysis.company_size || 'Unknown',\n        company_industry: analysis.company_industry || 'Unknown',\n        company_about: analysis.company_about || '',\n        role_summary: analysis.role_summary || '',\n        match_reasons: Array.isArray(analysis.match_reasons) ? analysis.match_reasons : [],\n        concerns: Array.isArray(analysis.concerns) ? analysis.concerns : [],\n        seniority_level: analysis.seniority_level || 'Unknown'\n      }\n    }\n  }];\n} catch (e) {\n  console.log('Parse error: ' + e.message);\n  return [{\n    json: {\n      title: jobData.title,\n      company: jobData.company,\n      location: jobData.location,\n      job_link: jobData.job_link,\n      posted_date: jobData.posted_date,\n      searchTitle: jobData.searchTitle,\n      config: config,\n      analysis: {\n        relevant: false,\n        rejection_reason: 'Parse error: ' + e.message,\n        score: 0,\n        company_size: 'Unknown',\n        company_industry: 'Unknown',\n        company_about: '',\n        role_summary: '',\n        match_reasons: [],\n        concerns: ['AI parse failed'],\n        seniority_level: 'Unknown'\n      }\n    }\n  }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2040, 100],
+      "id": "parse-ollama-response",
+      "name": "Parse Ollama Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "relevant-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.analysis.relevant === true }}",
+              "rightValue": true
+            },
+            {
+              "id": "score-check",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "leftValue": "={{ Number($json.analysis.score) }}",
+              "rightValue": "={{ Number($json.config?.minScore || $('Parse Config').item.json.minScore) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2260, 100],
+      "id": "filter-relevant",
+      "name": "Filter: Relevant?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.config?.ollamaUrl || $('Parse Config').item.json.ollamaUrl }}/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $json.config?.ollamaModel || $('Parse Config').item.json.ollamaModel }}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Write 250-350 word cover letter for Joao Lourenco. Profile: Engineering Manager, 14+ yrs software quality, 8+ yrs leading teams, manager of managers (16 people), scaled teams 4-16 during 6x revenue growth. Safety-critical: auto/aero/defence. Achievements: 90% less defects, 4-month to 2-day testing, zero compliance failures 5+ yrs ISO 9001/27001, 100% UK retention. Tech: Python, TypeScript, Selenium, Jenkins, AWS. Budget: 175k GBP. Be specific with numbers, no generic phrases.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Cover letter for: {{ $json.company }} - {{ $json.title }} ({{ $json.location }}). Industry: {{ $json.analysis.company_industry }}. Role: {{ $json.analysis.role_summary }}. Why match: {{ $json.analysis.match_reasons.join(', ') }}\"\n    }\n  ],\n  \"stream\": false,\n  \"options\": { \"temperature\": 0.7 }\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2480, 0],
+      "id": "ollama-cover-letter",
+      "name": "Ollama: Cover Letter"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get cover letter from Ollama response\nconst coverLetter = $input.item.json.message?.content || 'Generation failed';\n\n// Get job data from Filter node\nconst jobData = $('Filter: Relevant?').item.json;\nconst config = jobData.config || $('Parse Config').item.json;\n\n// Build the complete job record with cover letter\nconst jobRecord = {\n  // Job information\n  job: {\n    title: jobData.title,\n    company: jobData.company,\n    location: jobData.location,\n    job_link: jobData.job_link,\n    posted_date: jobData.posted_date,\n    description: jobData.description\n  },\n  // AI analysis\n  analysis: jobData.analysis,\n  // Cover letter\n  cover_letter: coverLetter.replace(/```/g, '').trim(),\n  // Metadata\n  metadata: {\n    ...config.metadata,\n    searchTitle: jobData.searchTitle,\n    processedAt: new Date().toISOString(),\n    status: 'matched'\n  }\n};\n\nreturn [{\n  json: {\n    jobRecord: jobRecord,\n    outputFile: config.outputFileMatches,\n    config: config\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2700, 0],
+      "id": "extract-cover-letter",
+      "name": "Build Match Record"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save match record to JSON file using base64 to avoid shell escaping issues\nconst jobRecord = $input.item.json.jobRecord;\nconst outputFile = $input.item.json.outputFile;\nconst config = $input.item.json.config;\n\n// Convert record to base64 to safely pass to shell\nconst recordJson = JSON.stringify(jobRecord);\nconst recordBase64 = Buffer.from(recordJson).toString('base64');\n\nreturn [{\n  json: {\n    recordBase64: recordBase64,\n    outputFile: outputFile,\n    config: config\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2920, 0],
+      "id": "encode-match-json",
+      "name": "Encode Match JSON"
+    },
+    {
+      "parameters": {
+        "command": "=OUTPUT_FILE=\"{{ $json.outputFile }}\"\nRECORD=$(echo '{{ $json.recordBase64 }}' | base64 -d)\n\nif [ -f \"$OUTPUT_FILE\" ] && [ -s \"$OUTPUT_FILE\" ]; then\n  CURRENT=$(cat \"$OUTPUT_FILE\")\n  echo \"${CURRENT%]},$RECORD]\" > \"$OUTPUT_FILE\"\nelse\n  echo \"[$RECORD]\" > \"$OUTPUT_FILE\"\nfi\necho \"Saved match to $OUTPUT_FILE\"",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3140, 0],
+      "id": "save-match-json",
+      "name": "Save Match JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get job data from Filter node (false branch = rejected)\nconst jobData = $input.item.json;\nconst config = jobData.config || $('Parse Config').item.json;\n\n// Build the rejected job record\nconst jobRecord = {\n  // Job information\n  job: {\n    title: jobData.title,\n    company: jobData.company,\n    location: jobData.location,\n    job_link: jobData.job_link,\n    posted_date: jobData.posted_date\n  },\n  // AI analysis (why rejected)\n  analysis: {\n    relevant: jobData.analysis.relevant,\n    rejection_reason: jobData.analysis.rejection_reason || `Score ${jobData.analysis.score} below minimum ${config.minScore}`,\n    score: jobData.analysis.score,\n    company_size: jobData.analysis.company_size,\n    company_industry: jobData.analysis.company_industry,\n    seniority_level: jobData.analysis.seniority_level\n  },\n  // Metadata\n  metadata: {\n    ...config.metadata,\n    searchTitle: jobData.searchTitle,\n    processedAt: new Date().toISOString(),\n    status: 'rejected'\n  }\n};\n\nreturn [{\n  json: {\n    jobRecord: jobRecord,\n    outputFile: config.outputFileRejected,\n    config: config\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2480, 200],
+      "id": "build-rejected-record",
+      "name": "Build Rejected Record"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Encode rejected record to base64 for safe shell passing\nconst jobRecord = $input.item.json.jobRecord;\nconst outputFile = $input.item.json.outputFile;\nconst config = $input.item.json.config;\n\nconst recordJson = JSON.stringify(jobRecord);\nconst recordBase64 = Buffer.from(recordJson).toString('base64');\n\nreturn [{\n  json: {\n    recordBase64: recordBase64,\n    outputFile: outputFile,\n    config: config\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2700, 200],
+      "id": "encode-rejected-json",
+      "name": "Encode Rejected JSON"
+    },
+    {
+      "parameters": {
+        "command": "=OUTPUT_FILE=\"{{ $json.outputFile }}\"\nRECORD=$(echo '{{ $json.recordBase64 }}' | base64 -d)\n\nif [ -f \"$OUTPUT_FILE\" ] && [ -s \"$OUTPUT_FILE\" ]; then\n  CURRENT=$(cat \"$OUTPUT_FILE\")\n  echo \"${CURRENT%]},$RECORD]\" > \"$OUTPUT_FILE\"\nelse\n  echo \"[$RECORD]\" > \"$OUTPUT_FILE\"\nfi\necho \"Saved rejected to $OUTPUT_FILE\"",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2920, 200],
+      "id": "save-rejected-json",
+      "name": "Save Rejected JSON"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1820, 300],
+      "id": "noop-done",
+      "name": "All Jobs Done"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [940, 300],
+      "id": "noop-all-titles-done",
+      "name": "All Titles Done"
+    },
+    {
+      "parameters": {
+        "content": "## LinkedIn Job Search - Local JSON\n\n**Config:** `/data/n8n_linkedin/config.json`\n\n**Output:** `/data/n8n_linkedin/output/`\n- `matches_YYYY-MM-DDTHH-MM-SS.json`\n- `rejected_YYYY-MM-DDTHH-MM-SS.json`\n\n**JSON Structure:**\n```json\n{\n  \"job\": { title, company, ... },\n  \"analysis\": { score, reasons, ... },\n  \"cover_letter\": \"...\",\n  \"metadata\": {\n    \"source\": \"LinkedIn\",\n    \"aiProvider\": \"Ollama\",\n    \"aiModel\": \"Qwen2.5\",\n    \"processedAt\": \"...\"\n  }\n}\n```",
+        "width": 340,
+        "height": 380,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-440, -260],
+      "id": "sticky-overview",
+      "name": "Overview"
+    }
+  ],
+  "connections": {
+    "Daily 9AM": {
+      "main": [[{"node": "Read Config File", "type": "main", "index": 0}]]
+    },
+    "Manual Run": {
+      "main": [[{"node": "Read Config File", "type": "main", "index": 0}]]
+    },
+    "Read Config File": {
+      "main": [[{"node": "Parse Config", "type": "main", "index": 0}]]
+    },
+    "Parse Config": {
+      "main": [[{"node": "Pass Config", "type": "main", "index": 0}]]
+    },
+    "Pass Config": {
+      "main": [[{"node": "Split Job Titles", "type": "main", "index": 0}]]
+    },
+    "Split Job Titles": {
+      "main": [[{"node": "Loop Job Titles", "type": "main", "index": 0}]]
+    },
+    "Loop Job Titles": {
+      "main": [
+        [{"node": "All Titles Done", "type": "main", "index": 0}],
+        [{"node": "Run Python Scraper", "type": "main", "index": 0}]
+      ]
+    },
+    "Run Python Scraper": {
+      "main": [[{"node": "Read Scraper Output", "type": "main", "index": 0}]]
+    },
+    "Read Scraper Output": {
+      "main": [[{"node": "Split Into Jobs", "type": "main", "index": 0}]]
+    },
+    "Split Into Jobs": {
+      "main": [[{"node": "Loop Jobs", "type": "main", "index": 0}]]
+    },
+    "Loop Jobs": {
+      "main": [
+        [{"node": "All Jobs Done", "type": "main", "index": 0}],
+        [{"node": "Ollama: Analyze Job", "type": "main", "index": 0}]
+      ]
+    },
+    "All Jobs Done": {
+      "main": [[{"node": "Loop Job Titles", "type": "main", "index": 0}]]
+    },
+    "Ollama: Analyze Job": {
+      "main": [[{"node": "Parse Ollama Response", "type": "main", "index": 0}]]
+    },
+    "Parse Ollama Response": {
+      "main": [[{"node": "Filter: Relevant?", "type": "main", "index": 0}]]
+    },
+    "Filter: Relevant?": {
+      "main": [
+        [{"node": "Ollama: Cover Letter", "type": "main", "index": 0}],
+        [{"node": "Build Rejected Record", "type": "main", "index": 0}]
+      ]
+    },
+    "Ollama: Cover Letter": {
+      "main": [[{"node": "Build Match Record", "type": "main", "index": 0}]]
+    },
+    "Build Match Record": {
+      "main": [[{"node": "Encode Match JSON", "type": "main", "index": 0}]]
+    },
+    "Encode Match JSON": {
+      "main": [[{"node": "Save Match JSON", "type": "main", "index": 0}]]
+    },
+    "Save Match JSON": {
+      "main": [[{"node": "Loop Jobs", "type": "main", "index": 0}]]
+    },
+    "Build Rejected Record": {
+      "main": [[{"node": "Encode Rejected JSON", "type": "main", "index": 0}]]
+    },
+    "Encode Rejected JSON": {
+      "main": [[{"node": "Save Rejected JSON", "type": "main", "index": 0}]]
+    },
+    "Save Rejected JSON": {
+      "main": [[{"node": "Loop Jobs", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "joao-linkedin-local-v15",
+  "meta": {
+    "instanceId": "custom"
+  },
+  "tags": []
+}

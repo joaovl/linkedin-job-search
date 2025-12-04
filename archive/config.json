@@ -1,0 +1,39 @@
+{
+  "job_titles": [
+    "Engineering Manager",
+    "Senior Engineering Manager",
+    "Head of Engineering",
+    "Head of QA",
+    "Director of Engineering",
+    "Director of Quality",
+    "VP Engineering",
+    "Test Manager",
+    "QA Manager"
+  ],
+  "location": "London, UK",
+  "time_range": "48h",
+  "exclude_keywords": [
+    "hands-on coding",
+    "electrical engineer",
+    "hardware",
+    "embedded",
+    "circuit",
+    "PCB",
+    "mechanical",
+    "civil engineer",
+    "construction",
+    "oil and gas"
+  ],
+  "must_have": [
+    "team lead",
+    "people management",
+    "software quality",
+    "test automation",
+    "CI/CD"
+  ],
+  "min_score": 6,
+  "max_jobs_per_title": 30,
+  "parallel_jobs": 1,
+  "ollama_model": "Qwen2.5:latest",
+  "ollama_url": "http://host.docker.internal:11434"
+}
