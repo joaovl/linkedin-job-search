@@ -1,5 +1,5 @@
 {
-  "name": "LinkedIn Job Search v4",
+  "name": "LinkedIn Job Search v6",
   "nodes": [
     {
       "parameters": {
@@ -23,7 +23,7 @@
     },
     {
       "parameters": {
-        "command": "echo '---CONFIG---' && cat /data/n8n_linkedin/config.json && echo '---PROCESSED---' && cat /data/n8n_linkedin/python/processed_jobs.txt 2>/dev/null || echo ''",
+        "command": "echo '---CONFIG---' && cat /data/n8n_linkedin/config.json && echo '---PROCESSED---' && cat /data/n8n_linkedin/python/processed_jobs.txt 2>/dev/null || echo '' && echo '---CV---' && cat /data/n8n_linkedin/data/Joao_Lourenco_CV_EngineeringManager.txt 2>/dev/null || echo ''",
         "options": {}
       },
       "type": "n8n-nodes-base.executeCommand",
@@ -34,7 +34,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const stdout = $input.item.json.stdout || '';\n\n// Parse config and processed jobs from combined output\nconst parts = stdout.split('---PROCESSED---');\nconst configPart = (parts[0] || '').replace('---CONFIG---', '').trim();\nconst processedPart = parts[1] || '';\n\nlet config = {};\ntry {\n  config = JSON.parse(configPart);\n} catch(e) {\n  console.log('Config parse error:', e.message);\n}\n\n// Parse processed job links (one URL per line, skip comments)\nconst processedLinks = processedPart\n  .split('\\n')\n  .map(line => line.trim())\n  .filter(line => line && !line.startsWith('#') && line.startsWith('http'));\n\nconsole.log(`Loaded ${processedLinks.length} previously processed job links`);\n\nconst now = new Date();\nconst timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);\n\nreturn [{\n  json: {\n    jobTitles: config.job_titles || ['Engineering Manager'],\n    location: config.location || 'London, UK',\n    timeRange: config.time_range || '48h',\n    excludeInTitle: config.exclude_in_title || [],\n    excludeInDescription: config.exclude_in_description || [],\n    flagForReview: config.flag_for_review || [],\n    mustHaveKeywords: config.must_have || [],\n    minScore: config.min_score || 7,\n    maxJobs: config.max_jobs_per_title || 20,\n    maxJobsTotal: config.max_jobs_total || 999,\n    debugMode: config.debug_mode || false,\n    skipCoverLetters: config.skip_cover_letters || false,\n    ollamaModel: config.ollama_model || 'qwen2.5:latest',\n    ollamaUrl: config.ollama_url || 'http://host.docker.internal:11434',\n    runTimestamp: timestamp,\n    jobsProcessed: 0,\n    processedLinks: processedLinks,\n    outputFileMatches: `/data/n8n_linkedin/output/matches_${timestamp}.json`,\n    outputFileRejected: `/data/n8n_linkedin/output/rejected_${timestamp}.json`,\n    metadata: {\n      source: 'LinkedIn (via Python scraper)',\n      aiProvider: 'Ollama (local)',\n      aiModel: config.ollama_model || 'qwen2.5:latest',\n      candidateName: 'Joao Lourenco',\n      runDate: now.toISOString(),\n      configVersion: '4.2-dedup'\n    }\n  }\n}];"
+        "jsCode": "const stdout = $input.item.json.stdout || '';\n\n// Split into CONFIG, PROCESSED, and CV sections\nconst configSplit = stdout.split('---PROCESSED---');\nconst configPart = (configSplit[0] || '').replace('---CONFIG---', '').trim();\n\nconst processedAndCV = configSplit[1] || '';\nconst cvSplit = processedAndCV.split('---CV---');\nconst processedPart = cvSplit[0] || '';\nconst cvContent = (cvSplit[1] || '').trim();\n\nlet config = {};\ntry {\n  config = JSON.parse(configPart);\n} catch(e) {\n  console.log('Config parse error:', e.message);\n}\n\nconst processedLinks = processedPart\n  .split('\\n')\n  .map(line => line.trim())\n  .filter(line => line && !line.startsWith('#') && line.startsWith('http'));\n\nconsole.log('Loaded ' + processedLinks.length + ' previously processed job links');\nconsole.log('CV loaded: ' + (cvContent.length > 0 ? cvContent.length + ' chars' : 'NOT FOUND'));\n\nconst now = new Date();\nconst timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);\n\nreturn [{\n  json: {\n    jobTitles: config.job_titles || ['Engineering Manager'],\n    location: config.location || 'London, UK',\n    timeRange: config.time_range || '48h',\n    excludeInTitle: config.exclude_in_title || [],\n    excludeInDescription: config.exclude_in_description || [],\n    flagForReview: config.flag_for_review || [],\n    mustHaveKeywords: config.must_have || [],\n    minScore: config.min_score || 7,\n    maxJobs: config.max_jobs_per_title || 0,\n    maxJobsTotal: config.max_jobs_total || 999,\n    debugMode: config.debug_mode || false,\n    skipCoverLetters: config.skip_cover_letters || false,\n    ollamaModel: config.ollama_model || 'qwen2.5:latest',\n    ollamaUrl: config.ollama_url || 'http://host.docker.internal:11434',\n    runTimestamp: timestamp,\n    processedLinks: processedLinks,\n    cvContent: cvContent\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -88,53 +88,95 @@
     },
     {
       "parameters": {
-        "jsCode": "// Process ALL jobs for this search title in one Code node\n// This avoids n8n's splitInBatches loop issues\n// v4.2: Added deduplication - skip already processed jobs\n\nconst jobsText = $input.item.json.stdout || '[]';\nlet jobs = [];\n\ntry {\n  jobs = JSON.parse(jobsText);\n} catch(e) {\n  console.log('JSON parse error:', e.message);\n  jobs = [];\n}\n\nconst config = $('Parse Config').item.json;\nconst searchTitle = $('Loop Job Titles').item.json.jobTitles;\n\n// Load already processed job links\nlet processedLinks = new Set();\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: 'file:///data/n8n_linkedin/python/processed_jobs.txt',\n    returnFullResponse: false\n  });\n} catch(e) {\n  // File might not exist or be accessible via HTTP, try reading differently\n}\n\n// For now, we'll track in the output and update the file via shell command\n// The processedLinks will be passed through the workflow\nconst previouslyProcessed = config.processedLinks || [];\nprocessedLinks = new Set(previouslyProcessed);\n\n// Filter out already processed jobs\nconst originalCount = jobs.length;\njobs = jobs.filter(job => {\n  const link = job.job_link || '';\n  if (!link) return true; // Keep jobs without links\n  if (processedLinks.has(link)) {\n    console.log(`SKIP (already processed): ${job.title} at ${job.company}`);\n    return false;\n  }\n  return true;\n});\nconst skippedCount = originalCount - jobs.length;\nif (skippedCount > 0) {\n  console.log(`Skipped ${skippedCount} already-processed jobs`);\n}\n\n// Check if we've already hit the total job limit\nconst maxTotal = config.maxJobsTotal || 999;\nlet processedSoFar = config.jobsProcessed || 0;\n\nif (processedSoFar >= maxTotal) {\n  console.log(`LIMIT REACHED: Already processed ${processedSoFar}/${maxTotal} jobs. Skipping ${searchTitle}`);\n  return [{ json: { matches: [], rejected: [], searchTitle, config, limitReached: true, newProcessedLinks: [] } }];\n}\n\nif (!Array.isArray(jobs) || jobs.length === 0) {\n  console.log(`No new jobs found for: ${searchTitle}`);\n  return [{ json: { matches: [], rejected: [], searchTitle, config, newProcessedLinks: [] } }];\n}\n\n// Limit jobs to process based on remaining quota\nconst remaining = maxTotal - processedSoFar;\nif (jobs.length > remaining) {\n  console.log(`DEBUG MODE: Limiting from ${jobs.length} to ${remaining} jobs (max_jobs_total: ${maxTotal})`);\n  jobs = jobs.slice(0, remaining);\n}\n\nconsole.log(`Processing ${jobs.length} NEW jobs for: ${searchTitle} (${processedSoFar} already done, max: ${maxTotal})`);\n\n// Track newly processed links to save later\nconst newProcessedLinks = [];\n\nconst matches = [];\nconst rejected = [];\n\n// Three-tier filtering (case-insensitive)\nconst excludeInTitle = (config.excludeInTitle || []).map(k => k.toLowerCase());\nconst excludeInDescription = (config.excludeInDescription || []).map(k => k.toLowerCase());\nconst flagForReview = (config.flagForReview || []).map(k => k.toLowerCase());\n\n// System prompt for job analysis\nconst systemPrompt = `You are a job matching assistant. Analyze job postings and return JSON assessments.\n\nCANDIDATE PROFILE:\nName: Joao Lourenco\nRole: Engineering Manager\nLocation: London, UK\nExperience: 14+ years software quality, 8+ years leading teams\nTeam Size: Managed 16 people including 2 Engineering Managers\nScaling: Grew teams from 4 to 16 engineers with 100% UK retention\nDomains: Safety-critical (automotive, aerospace, defence), static analysis\nCompliance: ISO 9001, ISO 27001, DO-178B\nTechnical: Test automation, CI/CD, Python, TypeScript, Jenkins, AWS\nAchievements: Reduced 4-month testing to 2-day automated, 90% defect reduction\n\nREJECT IF:\n- Hands-on IC coding role (not management)\n- Hardware/embedded/electrical engineering\n- Mechanical/civil/construction\n- Junior or mid-level positions\n- C-suite requiring 20+ years\n- Non-software industries\n\nSCORING:\n9-10: Perfect match (EM, safety-critical, team scaling)\n7-8: Strong match (EM software, good seniority)\n5-6: Partial match (some alignment)\n1-4: Poor match\n\nReturn ONLY valid JSON, no markdown.`;\n\n// Process each job sequentially\nfor (let i = 0; i < jobs.length; i++) {\n  const jobData = jobs[i];\n  const job = {\n    title: jobData.title || 'Unknown Title',\n    company: jobData.company || 'Unknown Company',\n    location: jobData.location || '',\n    job_link: jobData.job_link || '',\n    posted_date: jobData.posted_date || '',\n    description: jobData.description || ''\n  };\n  \n  console.log(`[${i+1}/${jobs.length}] Checking: ${job.title} at ${job.company}`);\n  \n  // THREE-TIER PRE-FILTER\n  const titleLower = job.title.toLowerCase();\n  const descLower = job.description.toLowerCase();\n  const allTextLower = `${titleLower} ${job.company.toLowerCase()} ${descLower}`;\n  \n  // TIER 1: Hard reject if keyword in TITLE\n  let titleRejection = null;\n  for (const keyword of excludeInTitle) {\n    if (titleLower.includes(keyword)) {\n      titleRejection = `Title contains: \"${keyword}\"`;\n      break;\n    }\n  }\n  \n  if (titleRejection) {\n    console.log(`  -> AUTO-REJECTED (title): ${titleRejection}`);\n    rejected.push({\n      job: job,\n      analysis: {\n        relevant: false,\n        rejection_reason: titleRejection,\n        score: 0,\n        company_size: 'Unknown',\n        company_industry: 'Unknown',\n        seniority_level: 'Unknown'\n      },\n      metadata: {\n        ...config.metadata,\n        searchTitle: searchTitle,\n        processedAt: new Date().toISOString(),\n        status: 'auto-rejected-title'\n      }\n    });\n    continue;\n  }\n  \n  // TIER 2: Hard reject if specific industry keywords in DESCRIPTION\n  let descRejection = null;\n  for (const keyword of excludeInDescription) {\n    if (descLower.includes(keyword)) {\n      descRejection = `Description contains: \"${keyword}\"`;\n      break;\n    }\n  }\n  \n  if (descRejection) {\n    console.log(`  -> AUTO-REJECTED (description): ${descRejection}`);\n    rejected.push({\n      job: job,\n      analysis: {\n        relevant: false,\n        rejection_reason: descRejection,\n        score: 0,\n        company_size: 'Unknown',\n        company_industry: 'Unknown',\n        seniority_level: 'Unknown'\n      },\n      metadata: {\n        ...config.metadata,\n        searchTitle: searchTitle,\n        processedAt: new Date().toISOString(),\n        status: 'auto-rejected-description'\n      }\n    });\n    continue;\n  }\n  \n  // TIER 3: Flag for review if soft keywords found anywhere\n  let reviewFlags = [];\n  for (const keyword of flagForReview) {\n    if (allTextLower.includes(keyword)) {\n      reviewFlags.push(keyword);\n    }\n  }\n  const needsReview = reviewFlags.length > 0;\n  if (needsReview) {\n    console.log(`  -> FLAGGED for review: ${reviewFlags.join(', ')}`);\n  }\n  \n  console.log(`  -> Passed pre-filters, calling AI...`);\n  \n  // Clean description\n  const cleanDesc = (job.description || '')\n    .substring(0, 2000)\n    .replace(/[\\x00-\\x1F\\x7F]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim() || 'No description available';\n  \n  const userPrompt = `Analyze this job:\\n\\nTitle: ${job.title}\\nCompany: ${job.company}\\nLocation: ${job.location}\\n\\nDescription:\\n${cleanDesc}\\n\\n---\\nReturn JSON with these fields:\\n{\\n  \"relevant\": true/false,\\n  \"rejection_reason\": null or string,\\n  \"score\": 1-10,\\n  \"company_size\": string,\\n  \"company_industry\": string,\\n  \"company_about\": string,\\n  \"role_summary\": string,\\n  \"match_reasons\": [array],\\n  \"concerns\": [array],\\n  \"seniority_level\": string\\n}`;\n  \n  let analysis = {\n    relevant: false,\n    rejection_reason: 'Failed to analyze',\n    score: 0,\n    company_size: 'Unknown',\n    company_industry: 'Unknown',\n    company_about: '',\n    role_summary: '',\n    match_reasons: [],\n    concerns: [],\n    seniority_level: 'Unknown'\n  };\n  \n  try {\n    // Call Ollama API\n    const response = await this.helpers.httpRequest({\n      method: 'POST',\n      url: `${config.ollamaUrl}/api/chat`,\n      body: {\n        model: config.ollamaModel,\n        messages: [\n          { role: 'system', content: systemPrompt },\n          { role: 'user', content: userPrompt }\n        ],\n        stream: false,\n        options: { temperature: 0.3 }\n      },\n      json: true,\n      timeout: 120000\n    });\n    \n    // Parse response\n    let responseText = response.message?.content || response.response || '';\n    responseText = responseText.replace(/```json\\n?/gi, '').replace(/```\\n?/g, '').trim();\n    \n    const jsonMatch = responseText.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) {\n      analysis = JSON.parse(jsonMatch[0]);\n    }\n  } catch(e) {\n    console.log(`Error analyzing job: ${e.message}`);\n    analysis.rejection_reason = 'Ollama error: ' + e.message;\n  }\n  \n  analysis.score = parseInt(analysis.score) || 0;\n  \n  console.log(`  -> Score: ${analysis.score}, Relevant: ${analysis.relevant}`);\n  \n  // Check if matches criteria\n  if (analysis.relevant === true && analysis.score >= config.minScore) {\n    // Generate cover letter for matches (unless skipped for debugging)\n    let coverLetter = '';\n    if (config.skipCoverLetters) {\n      coverLetter = '[Cover letter skipped - debug mode]';\n      console.log(`  -> Skipping cover letter (debug mode)`);\n    } else {\n      try {\n        const coverResponse = await this.helpers.httpRequest({\n          method: 'POST',\n          url: `${config.ollamaUrl}/api/chat`,\n          body: {\n            model: config.ollamaModel,\n            messages: [\n              { role: 'system', content: 'Write a professional cover letter. Be concise (300-400 words). No placeholder brackets. Ready to send.' },\n              { role: 'user', content: `Write a cover letter for Joao Lourenco applying to:\\n\\nPosition: ${job.title}\\nCompany: ${job.company}\\n\\nRole Summary: ${analysis.role_summary}\\n\\nWhy this matches:\\n${(analysis.match_reasons || []).join('\\n')}\\n\\nCandidate highlights:\\n- Engineering Manager, 14+ years experience\\n- Scaled teams 4 to 16 engineers\\n- Safety-critical: automotive, aerospace, defence\\n- 90% defect reduction\\n\\nAddress to 'Hiring Manager', sign as 'Joao Lourenco'.` }\n            ],\n            stream: false,\n            options: { temperature: 0.7 }\n          },\n          json: true,\n          timeout: 120000\n        });\n        coverLetter = coverResponse.message?.content || coverResponse.response || '';\n      } catch(e) {\n        coverLetter = 'Error generating cover letter: ' + e.message;\n      }\n    }\n    \n    const matchEntry = {\n      job: job,\n      analysis: analysis,\n      cover_letter: coverLetter.trim(),\n      needsReview: needsReview,\n      reviewFlags: reviewFlags,\n      metadata: {\n        ...config.metadata,\n        searchTitle: searchTitle,\n        processedAt: new Date().toISOString(),\n        status: needsReview ? 'matched-needs-review' : 'matched'\n      }\n    };\n    matches.push(matchEntry);\n    console.log(`  -> MATCHED!${needsReview ? ' (NEEDS REVIEW)' : ''}`);\n  } else {\n    // Add to rejected\n    rejected.push({\n      job: job,\n      analysis: {\n        relevant: analysis.relevant || false,\n        rejection_reason: analysis.rejection_reason || `Score ${analysis.score} below minimum ${config.minScore}`,\n        score: analysis.score,\n        company_size: analysis.company_size,\n        company_industry: analysis.company_industry,\n        seniority_level: analysis.seniority_level\n      },\n      needsReview: needsReview,\n      reviewFlags: reviewFlags,\n      metadata: {\n        ...config.metadata,\n        searchTitle: searchTitle,\n        processedAt: new Date().toISOString(),\n        status: needsReview ? 'rejected-needs-review' : 'rejected'\n      }\n    });\n  }\n}\n\nconsole.log(`Done! Matches: ${matches.length}, Rejected: ${rejected.length}`);\n\n// Collect all job links that were processed\nfor (const m of matches) {\n  if (m.job?.job_link) newProcessedLinks.push(m.job.job_link);\n}\nfor (const r of rejected) {\n  if (r.job?.job_link) newProcessedLinks.push(r.job.job_link);\n}\n\n// Update processed count for next iteration\nconst updatedConfig = { ...config, jobsProcessed: processedSoFar + jobs.length };\n\nconsole.log(`Total processed so far: ${updatedConfig.jobsProcessed}/${maxTotal}`);\nconsole.log(`New job links to save: ${newProcessedLinks.length}`);\n\n// Return results - will be saved by next node\nreturn [{\n  json: {\n    matches: matches,\n    rejected: rejected,\n    searchTitle: searchTitle,\n    config: updatedConfig,\n    newProcessedLinks: newProcessedLinks,\n    stats: {\n      total: jobs.length,\n      matched: matches.length,\n      rejected: rejected.length,\n      totalProcessed: updatedConfig.jobsProcessed,\n      maxTotal: maxTotal,\n      skipped: skippedCount || 0\n    }\n  }\n}];"
+        "jsCode": "// Parse jobs and prepare for processing\nconst jobsText = $input.item.json.stdout || '[]';\nlet allJobs = [];\n\ntry {\n  allJobs = JSON.parse(jobsText);\n} catch(e) {\n  console.log('JSON parse error:', e.message);\n  allJobs = [];\n}\n\nconst config = $('Parse Config').item.json;\nconst searchTitle = $('Loop Job Titles').item.json.jobTitles;\n\n// Filter out already processed jobs\nconst processedLinks = new Set(config.processedLinks || []);\nconst newJobs = [];\nconst skippedJobs = [];\n\nfor (const job of allJobs) {\n  const link = job.job_link || '';\n  if (link && processedLinks.has(link)) {\n    skippedJobs.push(job);\n  } else {\n    newJobs.push(job);\n  }\n}\n\nconsole.log(searchTitle + ': ' + newJobs.length + ' new jobs, ' + skippedJobs.length + ' skipped');\n\nif (newJobs.length === 0 && skippedJobs.length === 0) {\n  return [{ json: { noJobs: true, searchTitle, config } }];\n}\n\n// Pass all data to the next node\nreturn [{\n  json: {\n    noJobs: false,\n    searchTitle: searchTitle,\n    config: config,\n    newJobs: newJobs,\n    skippedJobs: skippedJobs\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 100],
+      "position": [1160, 100],
+      "id": "parse-jobs",
+      "name": "Parse Jobs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "no-jobs-check",
+              "leftValue": "={{ $json.noJobs }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1380, 100],
+      "id": "check-has-jobs",
+      "name": "Has Jobs?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare merge command - get timestamp from Parse Config\nconst config = $('Parse Config').item.json;\nconst timestamp = config.runTimestamp;\n\n// Pattern to match all analysis files from this run\nconst inputPattern = '/data/n8n_linkedin/output/analysis_*_' + timestamp + '.xlsx';\nconst outputFile = '/data/n8n_linkedin/output/ALL_JOBS_' + timestamp + '.xlsx';\n\nconsole.log('Merging all analysis files into: ' + outputFile);\n\nreturn [{\n  json: {\n    inputPattern: inputPattern,\n    outputFile: outputFile,\n    timestamp: timestamp\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "id": "prepare-merge",
+      "name": "Prepare Merge"
+    },
+    {
+      "parameters": {
+        "command": "=echo \"Merging Excel files...\"\npython3 /data/n8n_linkedin/python/excel_writer.py \"{{ $json.outputFile }}\" --merge \"{{ $json.inputPattern }}\"\necho \"\\nMerge complete: {{ $json.outputFile }}\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [940, 300],
+      "id": "merge-excels",
+      "name": "Merge All Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze ALL jobs for this search title and prepare batch output\nconst input = $input.item.json;\nconst config = input.config;\nconst searchTitle = input.searchTitle;\nconst newJobs = input.newJobs || [];\nconst skippedJobs = input.skippedJobs || [];\n\n// Generate per-search Excel filename\nconst safeTitle = searchTitle.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');\nconst timestamp = config.runTimestamp;\nconst outputExcel = '/data/n8n_linkedin/output/analysis_' + safeTitle + '_' + timestamp + '.xlsx';\n\nconsole.log('=== Analyzing ' + newJobs.length + ' jobs for: ' + searchTitle + ' ===');\nconsole.log('Output: ' + outputExcel);\n\nconst excludeInTitle = (config.excludeInTitle || []).map(k => k.toLowerCase());\nconst excludeInDescription = (config.excludeInDescription || []).map(k => k.toLowerCase());\n\nconst batchResults = [];\nconst newLinks = [];\n\n// Add skipped jobs to batch\nfor (const job of skippedJobs) {\n  batchResults.push({\n    timestamp: new Date().toISOString(),\n    search_title: searchTitle,\n    job_title: job.title || 'Unknown',\n    company: job.company || 'Unknown',\n    job_link: job.job_link || '',\n    decision: 'SKIPPED',\n    reason: 'Already processed',\n    score: ''\n  });\n}\n\n// Process new jobs\nlet idx = 0;\nfor (const job of newJobs) {\n  idx++;\n  let decision = 'UNKNOWN';\n  let reason = '';\n  let score = 0;\n  \n  console.log('[' + idx + '/' + newJobs.length + '] ' + job.title);\n  \n  const titleLower = (job.title || '').toLowerCase();\n  const descLower = (job.description || '').toLowerCase();\n  \n  // TIER 1: Title rejection\n  let rejected = false;\n  for (const kw of excludeInTitle) {\n    if (titleLower.includes(kw)) {\n      decision = 'REJECTED_TITLE';\n      reason = 'Title contains: ' + kw;\n      rejected = true;\n      console.log('  -> REJECTED (title)');\n      break;\n    }\n  }\n  \n  // TIER 2: Description rejection\n  if (!rejected) {\n    for (const kw of excludeInDescription) {\n      if (descLower.includes(kw)) {\n        decision = 'REJECTED_DESC';\n        reason = 'Description contains: ' + kw;\n        rejected = true;\n        console.log('  -> REJECTED (desc)');\n        break;\n      }\n    }\n  }\n  \n  // TIER 3: AI Analysis\n  if (!rejected) {\n    console.log('  -> Calling AI...');\n    \n    // Get CV content from config\n    const cvContent = config.cvContent || '';\n    const cvSummary = cvContent.substring(0, 2500); // Use first 2500 chars of CV\n    \n    const systemPrompt = 'You are a job matching expert. Analyze if the job description matches the candidate CV. Return JSON only.\\n\\n' +\n      'SCORING CRITERIA:\\n' +\n      '- 9-10: Perfect match - role aligns with experience, seniority, and domain\\n' +\n      '- 7-8: Good match - most requirements align, minor gaps acceptable\\n' +\n      '- 5-6: Partial match - some alignment but significant gaps\\n' +\n      '- 1-4: Poor match - wrong seniority, domain, or role type\\n\\n' +\n      'REJECT if: Individual contributor coding role, hardware/electrical engineering, junior/entry level, non-software domain (construction, healthcare, finance, legal), requires skills not in CV.\\n\\n' +\n      'MATCH if: Engineering/QA management role, team leadership, test/release management, CI/CD, agile, software quality.\\n\\n' +\n      'Return JSON: {relevant: boolean, rejection_reason: string (if not relevant), score: number (1-10), match_reasons: array of strings (top 3 reasons)}';\n    \n    const cleanDesc = (job.description || '').substring(0, 2000).replace(/[\\x00-\\x1F\\x7F]/g, ' ').replace(/\\s+/g, ' ');\n    const userPrompt = 'CANDIDATE CV:\\n' + cvSummary + '\\n\\n---\\n\\nJOB TO ANALYZE:\\nTitle: ' + job.title + '\\nCompany: ' + job.company + '\\nDescription: ' + cleanDesc + '\\n\\nAnalyze if this job matches the candidate. Return JSON only.';\n    \n    let analysis = { relevant: false, rejection_reason: 'Analysis failed', score: 0, match_reasons: [] };\n    \n    try {\n      const response = await this.helpers.httpRequest({\n        method: 'POST',\n        url: (config.ollamaUrl || 'http://host.docker.internal:11434') + '/api/chat',\n        body: {\n          model: config.ollamaModel || 'qwen2.5:latest',\n          messages: [\n            { role: 'system', content: systemPrompt },\n            { role: 'user', content: userPrompt }\n          ],\n          stream: false,\n          options: { temperature: 0.3 }\n        },\n        json: true,\n        timeout: 120000\n      });\n      \n      let txt = response.message?.content || '';\n      txt = txt.replace(/```json\\n?/gi, '').replace(/```\\n?/g, '').trim();\n      const m = txt.match(/\\{[\\s\\S]*\\}/);\n      if (m) analysis = JSON.parse(m[0]);\n    } catch(e) {\n      console.log('  -> AI Error: ' + e.message);\n      analysis.rejection_reason = 'AI error';\n    }\n    \n    score = parseInt(analysis.score) || 0;\n    \n    if (analysis.relevant === true && score >= (config.minScore || 7)) {\n      decision = 'MATCHED';\n      reason = (analysis.match_reasons || []).slice(0, 3).join('; ') || 'Met criteria';\n      console.log('  -> MATCHED (score ' + score + ')');\n    } else {\n      decision = 'REJECTED_AI';\n      reason = analysis.rejection_reason || 'Score ' + score;\n      console.log('  -> REJECTED (score ' + score + ')');\n    }\n  }\n  \n  // Add to batch\n  batchResults.push({\n    timestamp: new Date().toISOString(),\n    search_title: searchTitle,\n    job_title: (job.title || '').replace(/\"/g, '').replace(/'/g, ''),\n    company: (job.company || '').replace(/\"/g, '').replace(/'/g, ''),\n    job_link: job.job_link || '',\n    decision: decision,\n    reason: (reason || '').replace(/\"/g, '').replace(/'/g, '').substring(0, 200),\n    score: String(score)\n  });\n  \n  // Track new link for processed_jobs.txt\n  if (job.job_link) {\n    newLinks.push(job.job_link);\n  }\n}\n\nconsole.log('=== Done: ' + batchResults.length + ' total results ===');\n\n// Encode batch data as base64 for shell command\nconst batchB64 = Buffer.from(JSON.stringify(batchResults)).toString('base64');\n\n// Return single item with batch data already encoded\nreturn [{\n  json: {\n    outputExcel: outputExcel,\n    batchB64: batchB64,\n    batchCount: batchResults.length,\n    newLinks: newLinks,\n    searchTitle: searchTitle\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 200],
       "id": "process-all-jobs",
       "name": "Process All Jobs"
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.item.json;\nconst config = data.config;\nconst matches = data.matches || [];\nconst rejected = data.rejected || [];\n\n// Write each result individually as base64 chunks\nconst results = [];\n\n// Add matches one by one\nfor (const match of matches) {\n  // Flatten for Excel row\n  const excelRow = {\n    status: match.needsReview ? 'REVIEW' : 'MATCH',\n    needs_review: match.needsReview ? 'YES' : '',\n    review_flags: (match.reviewFlags || []).join('; '),\n    title: match.job?.title || '',\n    company: match.job?.company || '',\n    location: match.job?.location || '',\n    job_link: match.job?.job_link || '',\n    posted_date: match.job?.posted_date || '',\n    score: match.analysis?.score || 0,\n    seniority: match.analysis?.seniority_level || '',\n    industry: match.analysis?.company_industry || '',\n    company_size: match.analysis?.company_size || '',\n    role_summary: match.analysis?.role_summary || '',\n    match_reasons: (match.analysis?.match_reasons || []).join('; '),\n    concerns: (match.analysis?.concerns || []).join('; '),\n    cover_letter: match.cover_letter || '',\n    processed_at: match.metadata?.processedAt || ''\n  };\n  \n  results.push({\n    type: 'match',\n    data: Buffer.from(JSON.stringify(match)).toString('base64'),\n    excelRow: Buffer.from(JSON.stringify(excelRow)).toString('base64'),\n    file: config.outputFileMatches,\n    excelFile: config.outputFileMatches.replace('.json', '.xlsx'),\n    jobLink: match.job?.job_link || ''\n  });\n}\n\n// Add rejected one by one  \nfor (const rej of rejected) {\n  const excelRow = {\n    status: 'REJECTED',\n    needs_review: rej.needsReview ? 'YES' : '',\n    review_flags: (rej.reviewFlags || []).join('; '),\n    title: rej.job?.title || '',\n    company: rej.job?.company || '',\n    location: rej.job?.location || '',\n    job_link: rej.job?.job_link || '',\n    posted_date: rej.job?.posted_date || '',\n    score: rej.analysis?.score || 0,\n    seniority: rej.analysis?.seniority_level || '',\n    industry: rej.analysis?.company_industry || '',\n    company_size: rej.analysis?.company_size || '',\n    rejection_reason: rej.analysis?.rejection_reason || '',\n    match_reasons: '',\n    concerns: '',\n    cover_letter: '',\n    processed_at: rej.metadata?.processedAt || ''\n  };\n  \n  results.push({\n    type: 'rejected',\n    data: Buffer.from(JSON.stringify(rej)).toString('base64'),\n    excelRow: Buffer.from(JSON.stringify(excelRow)).toString('base64'),\n    file: config.outputFileRejected,\n    excelFile: config.outputFileRejected.replace('.json', '.xlsx'),\n    jobLink: rej.job?.job_link || ''\n  });\n}\n\n// Return array of items to process\nif (results.length === 0) {\n  return [{ json: { skip: true, stats: data.stats } }];\n}\n\nreturn results.map(r => ({ json: r }));"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1440, 100],
-      "id": "save-results",
-      "name": "Save Results"
-    },
-    {
-      "parameters": {
-        "command": "=FILE=\"{{ $json.file }}\"\nEXCEL_FILE=\"{{ $json.excelFile }}\"\nJOB_LINK=\"{{ $json.jobLink }}\"\nPROCESSED_FILE=\"/data/n8n_linkedin/python/processed_jobs.txt\"\n\nif [ \"{{ $json.skip }}\" = \"true\" ]; then\n  echo 'No results to save'\n  exit 0\nfi\n\n# Decode the base64 record using heredoc to avoid quote issues\nRECORD=$(cat <<'ENDBASE64' | base64 -d\n{{ $json.data }}\nENDBASE64\n)\n\n# Check if file exists and has content\nif [ -f \"$FILE\" ] && [ -s \"$FILE\" ]; then\n  # File exists - append to array (remove last ] and add comma + record + ])\n  TMP=$(mktemp)\n  head -c -2 \"$FILE\" > \"$TMP\"\n  printf ',\\n' >> \"$TMP\"\n  printf '%s\\n' \"$RECORD\" >> \"$TMP\"\n  printf ']\\n' >> \"$TMP\"\n  mv \"$TMP\" \"$FILE\"\nelse\n  # New file - create array with single record\n  printf '[\\n' > \"$FILE\"\n  printf '%s\\n' \"$RECORD\" >> \"$FILE\"\n  printf ']\\n' >> \"$FILE\"\nfi\n\necho \"Saved {{ $json.type }} to $FILE\"\n\n# Save to Excel\npython3 /data/n8n_linkedin/python/excel_writer.py \"$EXCEL_FILE\" \"{{ $json.excelRow }}\"\necho \"Saved to Excel: $EXCEL_FILE\"\n\n# Track this job link as processed (for deduplication)\nif [ -n \"$JOB_LINK\" ]; then\n  echo \"$JOB_LINK\" >> \"$PROCESSED_FILE\"\n  echo \"Tracked job link for deduplication\"\nfi",
+        "command": "=BATCH_FILE=$(mktemp)\necho '{{ $json.batchB64 }}' > \"$BATCH_FILE\"\necho \"Writing {{ $json.batchCount }} jobs to {{ $json.outputExcel }}\"\npython3 /data/n8n_linkedin/python/excel_writer.py \"{{ $json.outputExcel }}\" --batch-file \"$BATCH_FILE\"\nrm -f \"$BATCH_FILE\"\necho \"Done: {{ $json.searchTitle }}\"",
         "options": {}
       },
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [1680, 100],
-      "id": "write-record",
-      "name": "Write Record"
+      "position": [1820, 200],
+      "id": "write-excel-batch",
+      "name": "Write Excel Batch"
     },
     {
       "parameters": {},
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [720, 300],
-      "id": "noop-titles-done",
-      "name": "All Titles Done"
+      "position": [1600, 0],
+      "id": "no-jobs-skip",
+      "name": "No Jobs Skip"
     },
     {
       "parameters": {
-        "content": "## LinkedIn Job Search v4\n\n**Major change:** Process ALL jobs in single Code node\n- No more splitInBatches for jobs\n- Sequential Ollama calls inside for loop\n- More reliable data flow\n\n**Config:** `/data/n8n_linkedin/config.json`\n**Output:** `/data/n8n_linkedin/output/`",
+        "content": "## LinkedIn Job Search v6.0\n\n**One Excel per Search Title**\n\nEach search creates its own analysis file:\n- analysis_Head_of_Engineering_<timestamp>.xlsx\n- analysis_VP_Engineering_<timestamp>.xlsx\n- etc.\n\n**Flow:**\n1. Loop through job titles\n2. Scrape jobs for each title\n3. Analyze ALL jobs in one Code node\n4. Write ALL results to Excel in one batch\n5. Continue to next title\n\n**Config:** `/data/n8n_linkedin/config.json`",
         "width": 320,
-        "height": 200,
+        "height": 280,
         "color": 2
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-440, -160],
+      "position": [-440, -200],
       "id": "sticky-overview",
       "name": "Overview"
     }
@@ -157,23 +199,35 @@
     },
     "Loop Job Titles": {
       "main": [
-        [{ "node": "All Titles Done", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Merge", "type": "main", "index": 0 }],
         [{ "node": "Run Python Scraper", "type": "main", "index": 0 }]
       ]
+    },
+    "Prepare Merge": {
+      "main": [[{ "node": "Merge All Results", "type": "main", "index": 0 }]]
     },
     "Run Python Scraper": {
       "main": [[{ "node": "Read Scraper Output", "type": "main", "index": 0 }]]
     },
     "Read Scraper Output": {
-      "main": [[{ "node": "Process All Jobs", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Parse Jobs", "type": "main", "index": 0 }]]
+    },
+    "Parse Jobs": {
+      "main": [[{ "node": "Has Jobs?", "type": "main", "index": 0 }]]
+    },
+    "Has Jobs?": {
+      "main": [
+        [{ "node": "No Jobs Skip", "type": "main", "index": 0 }],
+        [{ "node": "Process All Jobs", "type": "main", "index": 0 }]
+      ]
+    },
+    "No Jobs Skip": {
+      "main": [[{ "node": "Loop Job Titles", "type": "main", "index": 0 }]]
     },
     "Process All Jobs": {
-      "main": [[{ "node": "Save Results", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Write Excel Batch", "type": "main", "index": 0 }]]
     },
-    "Save Results": {
-      "main": [[{ "node": "Write Record", "type": "main", "index": 0 }]]
-    },
-    "Write Record": {
+    "Write Excel Batch": {
       "main": [[{ "node": "Loop Job Titles", "type": "main", "index": 0 }]]
     }
   },
@@ -181,7 +235,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "joao-linkedin-v4",
+  "versionId": "joao-linkedin-v6",
   "meta": {
     "instanceId": "custom"
   },

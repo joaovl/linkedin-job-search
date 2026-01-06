@@ -1,0 +1,64 @@
+{
+  "cv_file": "/data/n8n_linkedin/data/your_cv.txt",
+  "job_titles": [
+    "Head of Engineering",
+    "Director of Engineering",
+    "Senior Engineering Manager",
+    "Engineering Manager",
+    "Head of QA",
+    "Director of Quality",
+    "VP Engineering"
+  ],
+  "location": "London, UK",
+  "time_range": "48h",
+  "max_jobs_total": 10,
+  "debug_mode": false,
+  "skip_cover_letters": true,
+  "exclude_in_title": [
+    "junior",
+    "Architect",
+    "Technical Lead",
+    "graduate",
+    "intern",
+    "apprentice",
+    "entry level",
+    "Developer",
+    "Backend",
+    "Frontend",
+    "Network",
+    "electrical engineer",
+    "mechanical engineer",
+    "civil engineer",
+    "structural engineer"
+  ],
+  "exclude_in_description": [
+    "CSCS card",
+    "construction management",
+    "electrical engineer",
+    "mechanical engineer",
+    "civil engineer",
+    "embedded systems",
+    "hardware",
+    "manufacturing",
+    "oil and gas"
+  ],
+  "flag_for_review": [
+    "hands-on coding",
+    "individual contributor",
+    "IC role",
+    "player-coach",
+    "hardware",
+    "embedded",
+    "construction"
+  ],
+  "must_have": [
+    "team",
+    "lead",
+    "people management"
+  ],
+  "min_score": 7,
+  "max_jobs_per_title": 3,
+  "parallel_jobs": 1,
+  "ollama_model": "qwen3:8b",
+  "ollama_url": "http://host.docker.internal:11434"
+}

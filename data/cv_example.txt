@@ -1,0 +1,47 @@
+Your Name - Job Title
+City, Country | your.email@example.com | linkedin.com/in/yourprofile
+
+PROFILE
+Brief summary of your professional background, years of experience, and key achievements.
+Focus on leadership experience, team size, and measurable outcomes.
+
+CORE COMPETENCIES
+
+Leadership & Strategy
+- Team leadership, strategic planning, stakeholder management
+- Budget management, cross-functional partnership
+
+Technical Excellence
+- Your key technical skills and technologies
+- CI/CD, DevOps, cloud platforms experience
+- Programming languages and frameworks
+
+KEY ACHIEVEMENTS
+- Achievement 1 with measurable impact (e.g., "Reduced defects by X%")
+- Achievement 2 with team/leadership context
+- Achievement 3 with business outcome
+
+PROFESSIONAL EXPERIENCE
+
+Company Name | City, Country
+Job Title | Start Date - End Date
+
+Key responsibilities and achievements:
+- Led team of X engineers across Y projects
+- Implemented Z initiative resulting in measurable outcome
+- Partnered with stakeholders to achieve specific goals
+
+Previous Company | City, Country
+Previous Job Title | Start Date - End Date
+
+Key responsibilities and achievements:
+- Description of role and impact
+- Technical and leadership accomplishments
+
+EDUCATION
+- Degree | Institution | Year
+- Certifications (if applicable)
+
+LANGUAGES
+- Language 1 (Fluency level)
+- Language 2 (Fluency level)

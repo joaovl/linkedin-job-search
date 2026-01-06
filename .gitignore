@@ -1,0 +1,125 @@
+# ===========================================
+# LinkedIn Job Search Automation - .gitignore
+# ===========================================
+
+# -------------------------------------------
+# Personal & Sensitive Data
+# -------------------------------------------
+# CV files (contain personal information)
+data/*.txt
+!data/cv_example.txt
+data/*.pdf
+data/*.doc
+data/*.docx
+!data/.gitkeep
+
+# Config with personal settings (use config.example.json as template)
+config.json
+
+# Processed jobs tracking
+python/processed_jobs.txt
+
+# -------------------------------------------
+# Output Files (Generated Data)
+# -------------------------------------------
+output/*.json
+output/*.xlsx
+output/*.csv
+!output/.gitkeep
+
+# Scraped job data files
+python/*__*.json
+*.jobs.json
+fintech_jobs.json
+
+# -------------------------------------------
+# Backup & Working Files
+# -------------------------------------------
+# Workflow backups and copies
+GOOD_*.json
+*Copy*.json
+*copy*.json
+* - Copy*.json
+*_backup*.json
+*.bak
+linkedin_job_search_v[0-9]*.json
+
+# Archive folder
+archive/
+
+# Working copies
+WorkingCopy/
+
+# Old documentation (replaced by README.md)
+README_linkedin_job_search.md
+
+# -------------------------------------------
+# Python
+# -------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+ENV/
+env/
+
+# -------------------------------------------
+# IDE & Editor
+# -------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# -------------------------------------------
+# Claude Code
+# -------------------------------------------
+.claude/
+
+# -------------------------------------------
+# Docker (local volumes, not config)
+# -------------------------------------------
+# Keep docker-compose.yml and Dockerfile
+*.log
+
+# -------------------------------------------
+# n8n
+# -------------------------------------------
+# n8n data is stored in Docker volume, not files
+# But exclude any local exports
+n8n_data/
+.n8n/
+
+# -------------------------------------------
+# OS Files
+# -------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# -------------------------------------------
+# Temporary files
+# -------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.old
