@@ -2,6 +2,8 @@
 
 An intelligent job search automation that scrapes LinkedIn job listings, analyzes them using a local LLM against your CV, and produces Excel reports with match scores.
 
+![Uploading image.png…]()
+
 ## Features
 
 - **Automated LinkedIn Scraping** - Searches multiple job titles and locations
