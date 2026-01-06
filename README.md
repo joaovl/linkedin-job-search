@@ -68,9 +68,12 @@ Edit `config.json`:
   "location": "London, UK",
   "time_range": "48h",
   "min_score": 7,
-  "ollama_model": "qwen3:8b"
+  "ollama_model": "qwen3:8b",
+  "ollama_url": "http://host.docker.internal:11434"
 }
 ```
+
+> **Note**: The `ollama_url` uses `host.docker.internal` to allow the Docker container to connect to Ollama running on your host machine.
 
 ### 3. Start Services
 
@@ -112,6 +115,7 @@ Results are saved to `output/`:
 | `min_score` | Minimum AI score (1-10) | `7` |
 | `max_jobs_per_title` | Limit per job title | `3` |
 | `ollama_model` | Ollama model to use | `"qwen3:8b"` |
+| `ollama_url` | Ollama server URL (use `host.docker.internal` for Docker) | `"http://host.docker.internal:11434"` |
 | `debug_mode` | Verbose logging | `false` |
 
 ## Filtering System
@@ -219,6 +223,59 @@ ollama serve
 # Verify GPU usage
 nvidia-smi
 ```
+
+### n8n Can't Connect to Ollama
+The workflow uses `http://host.docker.internal:11434` which lets Docker containers access host services.
+- Ensure Ollama is running on the host (not in Docker)
+- Verify Ollama is listening: `curl http://localhost:11434/api/tags`
+- Check `ollama_url` in config.json uses `host.docker.internal` (not `localhost`)
+
+### Python Scraper Fails in n8n
+```bash
+# Check Python is available in Docker container
+docker exec -it n8n-python python3 --version
+
+# Test scraper manually inside container
+docker exec -it n8n-python sh -c "cd /data/n8n_linkedin/python && python3 jobs_scraper.py -k 'Test' -l 'London' -n 1 --dry-run"
+```
+
+### Workflow Timeout
+- Increase timeout in HTTP Request nodes (default 300000ms = 5 min)
+- Use a faster Ollama model (e.g., `gemma2:2b` instead of `qwen3:8b`)
+
+## Quick Reference Commands
+
+```bash
+# Start everything (run in order):
+# 1. Docker Desktop (from Start Menu)
+# 2. Ollama (from system tray or: ollama serve)
+# 3. n8n container:
+docker-compose up -d
+
+# Stop everything:
+docker-compose down
+taskkill /IM ollama.exe /F      # Windows
+# pkill ollama                  # Linux/Mac
+
+# Check what's running:
+docker ps                              # Shows n8n container
+curl http://localhost:11434/api/tags   # Shows Ollama models
+nvidia-smi                             # Shows GPU usage
+
+# View logs:
+docker logs n8n-python
+```
+
+## Docker Volume Mapping
+
+The project directory is mounted into the container:
+- **Host**: `./` (project root)
+- **Container**: `/data/n8n_linkedin`
+
+This means:
+- Config paths use `/data/n8n_linkedin/...` (container path)
+- Output files appear in your local `output/` folder
+- Python scripts run from `/data/n8n_linkedin/python/`
 
 ## Contributing
 
